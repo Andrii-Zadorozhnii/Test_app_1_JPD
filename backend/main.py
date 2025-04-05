@@ -2,9 +2,8 @@ import os
 import logging
 import requests
 
-from sqlalchemy import create_engine, Column, Text, Integer, String, Float, Date
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import create_engine, Column, Integer, String, Float, Date
+from sqlalchemy.orm import sessionmaker, Session, declarative_base
 
 from fastapi import FastAPI, HTTPException, Depends
 
@@ -12,17 +11,17 @@ from pydantic import BaseModel
 from datetime import date
 
 from bs4 import BeautifulSoup
-
+from typing import List
 from dotenv import load_dotenv
 
 load_dotenv()
 
 #   Setting for connect to PostgreSQL database
 POSTGRES_USER = os.getenv('POSTGRES_USER','postgres')
-POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD','postgres')
+POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD','0711')
 POSTGRES_SERVER = os.getenv('POSTGRES_SERVER','localhost')
 POSTGRES_PORT = os.getenv('POSTGRES_PORT','5432')
-POSTGRES_DB = os.getenv('POSTGRES_DB','database_name')
+POSTGRES_DB = os.getenv('POSTGRES_DB','Test_app_1_JPD')
 
 #   Connection to PostgreSQL database
 SQLALCHEMY_DATABASE_URL = f'postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_SERVER}:{POSTGRES_PORT}/{POSTGRES_DB}'
@@ -31,13 +30,13 @@ SQLALCHEMY_DATABASE_URL = f'postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{PO
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 
 #   Creation Sessions fabric
-SessionLocal = sessionmaker(autoflush=False,autocommit=False, bing = engine)
+SessionLocal = sessionmaker(autoflush=False,autocommit=False, bind = engine)
 
 #   Creating Base Model
 Base = declarative_base()
 
 #   Creating Model fro consuption
-class Expenses(Base):
+class Expense(Base):
     '''
         Creating Model for consumption
         id: Integer (pk)
@@ -46,7 +45,7 @@ class Expenses(Base):
         amount_uah: Float
         amount: Float
     '''
-    __table__ = 'expenses'
+    __tablename__ = 'expenses'
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
@@ -54,9 +53,9 @@ class Expenses(Base):
     amount_uah = Column(Float)
     amount_usd = Column(Float)
 
-#  Trying to create table in data base
+#  Trying to create table in database
 try:
-    Base.metadata.create_all(bing=engine)
+    Base.metadata.create_all(bind=engine)
 except Exception as e:
     logging.error(f'Error during logging is {e}')
 
@@ -68,22 +67,22 @@ class ExpenseCreate(BaseModel):
     '''
     name: str
     date: date
-    amount_usd: float
+    amount_uah: float
 
-class ExpensisResponse(ExpenseCreate):
+class ExpenseResponse(ExpenseCreate):
     '''
         Display expensis / validation
     '''
     id: int
-    amount_usd = float
-#                                                                                   Need to think!!!!
-class ExpensesUpdate(BaseModel):
+    amount_usd: float
+#                                                                      Need to think!!!!
+class ExpenseUpdate(BaseModel):
     '''
         Update expensis / validation
     '''
     name: str
     date: date
-    amount_usd: float
+    amount_uah: float
 
 #   Creating FastAPI app
 app = FastAPI()
@@ -105,17 +104,85 @@ def get_usd_exchange_rate():
 
 #   Creating session with database
 
-def get_db(yeld=None):
+def get_db():
     db = SessionLocal()
     try:
-        yeld db
+        yield db
     finally:
         db.close()
 
+#   Endpoint for creating consumption
+
+@app.post('/expenses/', response_model=ExpenseResponse)
+def create_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
+    usd_rate = get_usd_exchange_rate()
+    amount_usd = expense.amount_uah / usd_rate
+
+    db_expense = Expense(
+        name=expense.name,
+        date=expense.date,
+        amount_uah=expense.amount_uah,
+        amount_usd = amount_usd
+    )
+
+    db.add(db_expense)
+    db.commit()
+    db.refresh(db_expense)
+
+    return db_expense
+
+#  Endpoint for receiving consumption
+
+@app.get('/expenses/', response_model=List[ExpenseResponse])
+def read_expense(start_date: date = None, end_date:date = None, db:Session = Depends(get_db)):
+    query = db.query(Expense)
+
+    #   Filter by dates
+    if start_date:
+        query = query.filter(Expense.date >= start_date)
+    if end_date:
+        query = query.filter(Expense.date <= end_date)
+
+    return query.order_by(Expense.date).all()
 
 
+#   Endpoint for deleting consumption
+@app.delete('/expenses/{expense_id}')
+def delete_expense(expense_id: int, db: Session = Depends(get_db)):
 
+    expense = db.query(Expense).filter(Expense.id == expense_id).first()
 
+    if not expense:
+        raise HTTPException(status_code=404, detail="No expense")
+
+    db.delete(expense)
+    db.commit()
+
+    return{'message': 'Positive delite'}
+
+#   Endpoint for update consumprion
+@app.put('/expenses/{expense_id}')
+def update_expense(expenses_id: int, expenses_update: ExpenseUpdate, db: Session = Depends(get_db)):
+
+    db_expense = db.query(Expense).filter(Expense.id == expenses_id).first()
+
+    if not db_expense:
+        raise HTTPException(status_code=404, detail="No expense")
+
+    # Update
+    if expenses_update.name is not None:
+        db_expense.name = expenses_update.name
+    if expenses_update.date is not None:
+        db_expense.date = expenses_update.date
+    if expenses_update.amount_uah is not None:
+        usd_rate = get_usd_exchange_rate()
+        db_expense.amount_uah = expenses_update.amount_uah
+        db_expense.amount_usd = expenses_update.amount_uah / usd_rate
+
+    db.commit()
+    db.refresh(db_expense)
+
+    return db_expense
 
 
 
